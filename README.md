@@ -2,6 +2,8 @@
 
 > Looking up a generative latent vectors from reference images.
 
+![example](https://user-images.githubusercontent.com/6625384/64915614-b82efd00-d730-11e9-92e4-f3a6de1a5575.png)
+
 ### Usage
 
 ```shell
