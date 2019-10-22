@@ -171,7 +171,7 @@ def grad_descent_find_face(img_path, output, input_init_vec, max_iter, lr, seed,
     fit_attempts = max(max_iter // 1000, 1)
     for i in range(fit_attempts):
         print('Best ({}/{}) = {}'.format(i, fit_attempts, round(lowest_loss, 5)))
-        hist = model.fit(np.empty((1, 1, 1)), ref_vec, epochs=5, verbose=keras_verbose)
+        hist = model.fit(np.empty((1, 1, 1)), ref_vec, epochs=1000, verbose=keras_verbose)
         hist_loss = hist.history['loss'][-1]
         if hist_loss < lowest_loss:
             best_vec = model.layers[0].get_weights()[0]
