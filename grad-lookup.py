@@ -1,23 +1,16 @@
-"""
-TODO
-"""
 import cv2
 import time
 import click
 import pickle
 import numpy as np
 
+# Tensorflow (tensorflow==1.14.0)
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 import tensorflow as tf
 tf.autograph.set_verbosity(1)
 
-me = cv2.cvtColor(cv2.imread('real-estella.jpg'), cv2.COLOR_RGB2BGR)
-me = np.rollaxis(me.reshape((1, 1024, 1024, 3)), 3, 1)
-
-me2 = cv2.cvtColor(cv2.imread('real-shrivu2.jpg'), cv2.COLOR_RGB2BGR)
-me2 = np.rollaxis(me2.reshape((1, 1024, 1024, 3)), 3, 1)
-
+# Keras (Keras==2.3.1)
 from keras_vggface.vggface import VGGFace
 from keras.models import Model as KerasModel
 from keras.layers import Lambda as KerasLambda, Flatten as KerasFlatten
@@ -29,23 +22,39 @@ from dnnlib import util
 import config
 FACE_MODEL_URL = "https://drive.google.com/uc?id=1MEGjdvVpUsu1jB4zrXZN7Y4kBBOzizDQ"
 
-class DummyLayer(tf.keras.layers.Layer):
-    def __init__(self, **kwargs):
-        super(DummyLayer, self).__init__(**kwargs)
+
+class DynamicInputLayer(tf.keras.layers.Layer):
+    """
+    An input layer that can we updated w/training.
+    Ignores actual model input.
+
+    Input --ignored--> DynamicInputLayer -> Random Vector
+    """
+    def __init__(self, init_value, **kwargs):
+        super(DynamicInputLayer, self).__init__(**kwargs)
+        self.init_value = init_value
 
     def build(self, input_shape):
-        # tf.initializers.random_normal(0, 1)
-        init = tf.constant_initializer(np.load('out\\test-real-0.071.npy'))
-        self.dummy_weights = self.add_weight("dummy_weights",
-            shape=[1, 512], trainable=True, initializer=init)
+        if self.init_value is None:
+            initer = tf.initializers.random_normal(0, 1)
+        else:
+            initer = tf.constant_initializer(self.init_value)
+        self.input_as_weights = self.add_weight("input_as_weights",
+            shape=(1, 512), trainable=True, initializer=initer)
 
     def call(self, input_):
-        return self.dummy_weights
+        return self.input_as_weights
 
-class GANLayer(tf.keras.layers.Layer):
+
+class StyleGANLayer(tf.keras.layers.Layer):
+    """
+    A layer that implements StyleGAN.
+
+    Latent Vec -> StyleGANLayer -> Image of Face (1024x1024)
+    """
     def __init__(self, **kwargs):
         kwargs['trainable'] = False
-        super(GANLayer, self).__init__(**kwargs)
+        super(StyleGANLayer, self).__init__(**kwargs)
 
     def build(self, input_shape):
         with util.open_url(FACE_MODEL_URL, cache_dir=config.cache_dir) as f:
@@ -53,61 +62,39 @@ class GANLayer(tf.keras.layers.Layer):
         self.Gs = Gs.clone()
 
     def call(self, input_):
-        face_img = self.Gs.get_output_for(input_, None, is_validation=True, randomize_noise=False)
-        scale = 255 / 2
-        return face_img * scale + (0.5 + 1 * scale)
+        face_img = self.Gs.get_output_for(input_, None, 
+            is_validation=True, randomize_noise=False)
+        return (255 / 2) * face_img + 128
+
 
 class FaceFeatures(tf.keras.layers.Layer):
+    """
+    A layer that converts a face into facial features.
+
+    Face Image -> FaceFeatures -> Face Features (~2k feature vector)
+    """
     def __init__(self, **kwargs):
         kwargs['trainable'] = False
         super(FaceFeatures, self).__init__(**kwargs)
+        self.feat_mean = tf.reshape(tf.constant(
+            [93.5940, 104.7624, 129.1863], dtype=tf.float32), [1, 1, 1, 3])
 
     def build(self, input_shape):
-        vggface_model = VGGFace(model='vgg16', weights='vggface', include_top=True, input_shape=(224, 224, 3))
+        vggface_model = VGGFace(model='vgg16', weights='vggface', 
+            include_top=True, input_shape=(224, 224, 3))
         feat_out = vggface_model.layers[-2].output
-        # flat_out = KerasFlatten()(feat_out)
         self.model = KerasModel(vggface_model.input, feat_out)
-        # self.model = vggface_model
 
-    def call(self, input_):
-        input_ = tf.transpose(input_, [0, 2, 3, 1])
-        input_resized = tf.image.resize( 
-            input_, 
+    def call(self, face_img):
+        face_img = tf.transpose(face_img, [0, 2, 3, 1])
+        img_resized = tf.image.resize( 
+            face_img, 
             (224, 224), 
             method=tf.image.ResizeMethod.BICUBIC
         )
-        input_adjusted = input_resized[..., ::-1]
-        mean = tf.constant([93.5940, 104.7624, 129.1863], dtype=tf.float32)
-        input_adjusted = input_adjusted - tf.reshape(mean, [1, 1, 1, 3])
-        return self.model(input_adjusted)
+        img_adjusted = img_resized[..., ::-1]
+        return self.model(img_adjusted - self.feat_mean)
 
-
-ref_model = tf.keras.Sequential([
-  FaceFeatures()
-])
-my_vec = ref_model.predict(me)
-my_vec2 = ref_model.predict(me2)
-print(my_vec)
-print(my_vec.shape)
-print('REF DIFF =', np.linalg.norm(my_vec - my_vec2))
-
-model = tf.keras.Sequential([
-  DummyLayer(input_shape=(512,)),
-  GANLayer(),
-  FaceFeatures()
-])
-
-model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.01),
-              loss=tf.keras.losses.MSE)
-
-best = 9e9
-for i in range(10000):
-    hist = model.fit(np.empty((1, 512)), my_vec, epochs=2000)
-    last_loss = hist.history['loss'][-1]
-    if last_loss < best:
-        vec = model.layers[0].get_weights()[0]
-        np.save('out\\test-real-{:.3f}.npy'.format(last_loss), vec)
-        best = last_loss
 
 @click.command()
 @click.option('--img_path',
@@ -118,21 +105,35 @@ for i in range(10000):
     default='best',
     help='Output file prefix.',
     type=click.Path())
+@click.option('--input_init_vec',
+    default=None,
+    help='Use this file to init input layer. Should be (1,512) and an .npy',
+    type=click.Path())
 @click.option('--max_iter',
-    default=500,
+    default=100000,
     help='Maximum number of iterations.',
+    type=int)
+@click.option('--lr',
+    default=0.01,
+    help='Learning rate.',
     type=int)
 @click.option('--seed',
     default=2,
     help='Randomness seed.',
     type=int)
-def grad_descent_find_face(img_path, output, max_iter, batch_size, seed):
+@click.option('--keras_verbose',
+    default=0,
+    help='Training logs',
+    type=int)
+def grad_descent_find_face(img_path, output, input_init_vec, max_iter, lr, seed, keras_verbose):
     """
     Iteratively find the closest face that can be generated by StyleGAN.
 
     Note 1: img_path must point to a square image of a face.
     Note 2: By default, this script with save the best img and its latent vector
-    to best.jpg and best.npy.
+        to best.jpg and best.npy.
+    Note 3: This code tends to print a lot of warnings but if it gets to training
+        then it's working.
     """
     np.random.seed(seed)
     tf.set_random_seed(seed)
@@ -142,31 +143,41 @@ def grad_descent_find_face(img_path, output, max_iter, batch_size, seed):
 
     vec_to_image = make_generator()
 
-    print('#s: 0 = perfect, 0.4 = could be the same person, 1 = worst')
+    # Compute target features
+    ref_model = tf.keras.Sequential([
+        FaceFeatures()
+    ])
+    ref_vec = ref_model.predict(ref_img)
 
-    for i in range(max_iter // 1000):
-        print('Best ({}/{}) = {}'.format(i, max_iter, round(best_dist, 5)))
+    if input_init_vec is None:
+        # None -> Totally random starting vector
+        dynamic_init_weights = None
+    else:
+        dynamic_init_weights = np.load(input_init_vec)
 
+    # Actual model for finding latent vector
+    model = tf.keras.Sequential([
+        DynamicInputLayer(dynamic_init_weights, input_shape=(1, 1)), # real input is ignored.
+        StyleGANLayer(),
+        FaceFeatures()
+    ])
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=0.01),
+        loss=tf.keras.losses.MSE)
 
-        if i < 10:
-            # Warmup w/completely random latents
-            latents = rnd.randn(batch_size, 512)
-        else:
-            # Base latents off prev best
-            latents = best_latent * 0.7 + rnd.randn(batch_size, 512) * 0.3
-        images = vec_to_image(latents)
-        for k in range(batch_size):
-            image = images[k]
-            try:
-                gan_encoding = face_recognition.face_encodings(image)[0]
-            except IndexError:
-                continue
-            dist = face_recognition.face_distance([ref_img_encoding], gan_encoding)[0]
-            if dist < best_dist:
-                best_dist = dist
-                best_latent = latents[k]
-                cv2.imwrite(output + '.jpg', cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
-                np.save(output + '.npy', best_latent)
+    print('#s: 0 = perfect, 0.01 = could be the same person, inf = worst')
+
+    lowest_loss = float('inf')
+    fit_attempts = max(max_iter // 1000, 1)
+    for i in range(fit_attempts):
+        print('Best ({}/{}) = {}'.format(i, fit_attempts, round(lowest_loss, 5)))
+        hist = model.fit(np.empty((1, 1, 1)), ref_vec, epochs=5, verbose=keras_verbose)
+        hist_loss = hist.history['loss'][-1]
+        if hist_loss < lowest_loss:
+            best_vec = model.layers[0].get_weights()[0]
+            np.save(output + '.npy', best_vec)
+            cv2.imwrite(output + '.jpg', cv2.cvtColor(vec_to_image(best_vec)[0], cv2.COLOR_RGB2BGR))
+            lowest_loss = hist_loss
 
 
 def make_generator():
