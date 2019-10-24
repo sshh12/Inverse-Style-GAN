@@ -1,5 +1,4 @@
 import cv2
-import time
 import click
 import pickle
 import numpy as np
@@ -67,15 +66,15 @@ class StyleGANLayer(tf.keras.layers.Layer):
         return (255 / 2) * face_img + 128
 
 
-class FaceFeatures(tf.keras.layers.Layer):
+class FaceFeaturesLayer(tf.keras.layers.Layer):
     """
     A layer that converts a face into facial features.
 
-    Face Image -> FaceFeatures -> Face Features (~2k feature vector)
+    Face Image -> FaceFeaturesLayer -> Face Features (~2k feature vector)
     """
     def __init__(self, **kwargs):
         kwargs['trainable'] = False
-        super(FaceFeatures, self).__init__(**kwargs)
+        super(FaceFeaturesLayer, self).__init__(**kwargs)
         self.feat_mean = tf.reshape(tf.constant(
             [93.5940, 104.7624, 129.1863], dtype=tf.float32), [1, 1, 1, 3])
 
@@ -92,18 +91,17 @@ class FaceFeatures(tf.keras.layers.Layer):
             (224, 224), 
             method=tf.image.ResizeMethod.BICUBIC
         )
-        img_adjusted = img_resized[..., ::-1]
-        return self.model(img_adjusted - self.feat_mean)
+        return self.model(img_resized - self.feat_mean)
 
 
 @click.command()
 @click.option('--img_path',
     default='face.jpg',
-    help='Path to query image.',
+    help='Path to query image',
     type=click.Path())
 @click.option('--output',
     default='best',
-    help='Output file prefix.',
+    help='Output file prefix',
     type=click.Path())
 @click.option('--input_init_vec',
     default=None,
@@ -111,19 +109,19 @@ class FaceFeatures(tf.keras.layers.Layer):
     type=click.Path())
 @click.option('--max_iter',
     default=100000,
-    help='Maximum number of iterations.',
+    help='Maximum number of iterations',
     type=int)
 @click.option('--lr',
     default=0.01,
-    help='Learning rate.',
+    help='Learning rate',
     type=int)
 @click.option('--seed',
     default=2,
-    help='Randomness seed.',
+    help='Randomness seed',
     type=int)
 @click.option('--keras_verbose',
     default=0,
-    help='Training logs',
+    help='Show Keras training logs',
     type=int)
 def grad_descent_find_face(img_path, output, input_init_vec, max_iter, lr, seed, keras_verbose):
     """
@@ -145,7 +143,7 @@ def grad_descent_find_face(img_path, output, input_init_vec, max_iter, lr, seed,
 
     # Compute target features
     ref_model = tf.keras.Sequential([
-        FaceFeatures()
+        FaceFeaturesLayer()
     ])
     ref_vec = ref_model.predict(ref_img)
 
@@ -159,10 +157,10 @@ def grad_descent_find_face(img_path, output, input_init_vec, max_iter, lr, seed,
     model = tf.keras.Sequential([
         DynamicInputLayer(dynamic_init_weights, input_shape=(1, 1)), # real input is ignored.
         StyleGANLayer(),
-        FaceFeatures()
+        FaceFeaturesLayer()
     ])
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=0.01),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
         loss=tf.keras.losses.MSE)
 
     print('#s: 0 = perfect, 0.01 = could be the same person, inf = worst')
@@ -174,7 +172,7 @@ def grad_descent_find_face(img_path, output, input_init_vec, max_iter, lr, seed,
         hist = model.fit(np.empty((1, 1, 1)), ref_vec, epochs=1000, verbose=keras_verbose)
         hist_loss = hist.history['loss'][-1]
         if hist_loss < lowest_loss:
-            best_vec = model.layers[0].get_weights()[0]
+            best_vec = model.layers[0].get_weights()[0] # extract input latent vec
             np.save(output + '.npy', best_vec)
             cv2.imwrite(output + '.jpg', cv2.cvtColor(vec_to_image(best_vec)[0], cv2.COLOR_RGB2BGR))
             lowest_loss = hist_loss
