@@ -91,7 +91,7 @@ class FaceFeaturesLayer(tf.keras.layers.Layer):
             (224, 224), 
             method=tf.image.ResizeMethod.BICUBIC
         )
-        return self.model(img_resized - self.feat_mean)
+        return self.model(img_resized[..., ::-1] - self.feat_mean)
 
 
 @click.command()
@@ -114,7 +114,7 @@ class FaceFeaturesLayer(tf.keras.layers.Layer):
 @click.option('--lr',
     default=0.01,
     help='Learning rate',
-    type=int)
+    type=float)
 @click.option('--seed',
     default=2,
     help='Randomness seed',
@@ -136,7 +136,7 @@ def grad_descent_find_face(img_path, output, input_init_vec, max_iter, lr, seed,
     np.random.seed(seed)
     tf.set_random_seed(seed)
 
-    ref_img = cv2.cvtColor(cv2.resize(cv2.imread(img_path), (1024, 1024)), cv2.COLOR_RGB2BGR)
+    ref_img = cv2.cvtColor(cv2.resize(cv2.imread(img_path), (1024, 1024)), cv2.COLOR_BGR2RGB)
     ref_img = np.rollaxis(ref_img.reshape((1, 1024, 1024, 3)), 3, 1)
 
     vec_to_image = make_generator()
